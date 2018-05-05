@@ -1,0 +1,51 @@
+#include "../include/Dictionary.hh"
+
+Dictionary::Dictionary(){
+  fOk = false;
+}
+
+Dictionary::~Dictionary(){;}
+
+void Dictionary::Setup(std::string file){
+  const char* name = file.c_str();
+  printf("Loading dictionary file %s...\n",name);
+  int nwords[4] = {0,0,0,0};
+  
+  std::ifstream words(name, std::ifstream::in);;
+  if( words.is_open() ){
+    std::string line;
+    while( std::getline(words,line) ){
+      if( line[0] == '#' ) continue;
+      trim(line);
+      fAllWords[ nwords[0]++ ] = line;
+      if( line.length() <= 5 ) fShortWords[ nwords[1]++ ] = line;
+      if( line.length() > 5 && line.length() <= 7) fMediumWords[ nwords[2]++ ] = line;
+      if( line.length() > 7 ) fLongWords[ nwords[3]++ ] = line;      
+    }
+  } else{
+    std::cerr << file << " did not open properly...check spelling." << std::endl;
+    fOk = false;
+    return;
+  }
+  printf("All \t short \t med \t long - %d \t %d \t %d \t %d \n",
+	 nwords[0], nwords[1], nwords[2], nwords[3] );
+  fSize      = fAllWords.size();
+  fShortSize = fShortWords.size();
+  fMedSize   = fMediumWords.size();
+  fLongSize  = fLongWords.size();
+  CheckMaps();
+  std::cout << "\n\n";
+}
+
+void Dictionary::trim(std::string& temp){
+  temp.erase(temp.find_last_not_of(" \t\n\r\f\v") + 1);
+}
+
+void Dictionary::CheckMaps(){
+  if( fAllWords.empty() || fShortWords.empty() ||
+      fMediumWords.empty() || fLongWords.empty() ){
+    fOk = false;
+  } else {
+    fOk = true;
+  }
+}

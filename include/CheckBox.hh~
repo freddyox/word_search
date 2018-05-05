@@ -1,0 +1,18 @@
+#ifndef CHECKBOX_HH
+#define CHECKBOX_HH
+#include <SFML/Graphics.hpp>
+
+class CheckBox :  public sf::Drawable {
+private:
+  int fX, fY;
+
+  sf::Texture fTx;
+  sf::Sprite fUnchecked, fChecked;
+  
+public:
+  CheckBox(int,int);
+  ~CheckBox();
+  void draw(sf::RenderTarget&, sf::RenderStates) const;
+void Draw();
+};
+#endif

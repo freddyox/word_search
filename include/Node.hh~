@@ -1,0 +1,15 @@
+#ifndef NODE_HH
+#define NODE_HH
+#include <string>
+#include <vector>
+
+class Node{
+private:
+  int fId;
+  std::string fTitle;
+public:
+  Node();
+  ~Node();
+  std::vector<Node*> fChildren;
+};
+#endif

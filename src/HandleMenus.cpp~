@@ -1,0 +1,7 @@
+#include "../include/HandleMenus.hh"
+
+HandleMenus::HandleMenus(){
+  ;
+}
+
+HandleMenus::~HandleMenus(){;}

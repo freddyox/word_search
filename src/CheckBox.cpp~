@@ -1,0 +1,19 @@
+#include "../include/CheckBox.hh"
+#include <iostream>
+
+CheckBox::CheckBox(int x, int y) : fX(x), fY(y) {
+  
+  if( !fTx.loadFromFile("unchecked.png") ) {
+    std::cerr << "ERROR: Texture failed..." << std::endl;
+  }
+  fUnchecked.setTexture( fTx );
+  sf::FloatRect rect = fUnchecked.getLocalBounds();
+  fUnchecked.setOrigin(0.5*rect.width,0.5*rect.height);
+  fUnchecked.setPosition(sf::Vector2f(x,y));
+}
+
+CheckBox::~CheckBox(){;}
+
+void CheckBox::draw( sf::RenderTarget& target, sf::RenderStates) const {
+  target.draw(fUnchecked);
+}

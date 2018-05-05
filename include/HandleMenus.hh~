@@ -1,0 +1,13 @@
+#ifndef HANDLEMENUS_HH
+#define HANDLEMENUS_HH
+
+class HandleMenus{
+private:
+
+  
+public:
+  HandleMenus();
+  ~HandleMenus();
+  
+};
+#endif

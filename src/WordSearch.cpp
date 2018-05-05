@@ -1,0 +1,771 @@
+#include "../include/WordSearch.hh"
+#include <iostream>
+#include <string>
+#include <stdio.h>      /* printf, scanf, puts, NULL */
+#include <stdlib.h>     /* srand, rand */
+#include <time.h>       /* time */
+#include <locale>
+#include <iterator>
+#include <algorithm>
+#include <cmath>
+
+WordSearch::WordSearch(float x, float y, int nrow, int ncol) :
+  fX(x), fY(y), fRow(nrow), fCol(ncol) {
+  fOffsetX = 0.2*fX;
+  fBoardColor = sf::Color::Black;
+  fWordCount = 0;
+  
+  // Seed the C++ uniform generator
+  srand(time(NULL));
+
+  // Handle the Board:
+  fLine = sf::VertexArray(sf::Lines,2);
+  make_board();
+
+  // Convenience Maps:
+  build_convenient_maps();
+
+  // This is the bulk of the class, containing
+  // the word selection and placement algorithm
+  handle_word_placement();
+
+  // User interaction
+  fFinalClick = 0;
+  fInitialClick = 0;
+  fUserColor = sf::Color::Red;
+  fFoundColor = sf::Color(0,153,0);
+  
+  // User states
+  fCheatStatus = false;  // Was box clicked, yes or no?
+  fUserAttempt = false;  // Did user attempt to find a word, yes or no?
+
+  // Load up sounds:
+  fSounds = new Sounds();
+
+  // Completion of the Search
+  fSuccess = false;
+  fCutOffTime = sf::seconds(0.0);
+  fSuccessCount = -1;
+}
+
+WordSearch::~WordSearch(){;}
+
+void WordSearch::build_convenient_maps(){
+  std::string vars[]={"up","right","down","left",
+		      "upleft","upright","downright","downleft"};
+  unsigned int nvars = sizeof(vars) / sizeof*(vars);
+  for(int i=0; i<nvars; i++){
+    fDirMap[vars[i]] = i;
+    fDirMapInv[i] = vars[i];
+  }
+ 
+  // Make letter map for random generation
+  std::string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXZ";
+  for(int i=0; i<alphabet.length(); i++){
+    fAlphabet[i] = alphabet[i];
+  }
+
+  fDict = new Dictionary();
+  fDict->Setup("dict/math_sjsu.txt");
+  if( !fDict->fOk ){
+    std::cerr << "Error loading the Dictionary in WS Class" << std::endl;
+  }
+  
+  fWordLength["short"]  = 0;
+  fWordLength["medium"] = 1;
+  fWordLength["long"]   = 2;
+  
+  make_word_list();
+  
+  fDifficulty = "Medium";
+  set_difficulty_numbers(fDifficulty);
+  
+  // Handle text indices on nodes
+  if( !fFont.loadFromFile("fonts/arial.ttf")) {
+    std::cerr << "ERROR: Font did not load properly." << std::endl;
+  }
+  fText.setFont(fFont);
+
+  std::string letters = "COMPLETE!";
+  fText.setCharacterSize( 150 );
+  for(int i=0; i<letters.length(); i++){
+    fText.setString(letters[i]);
+    fText.setColor(sf::Color(127,0,255));
+    sf::FloatRect bound = fText.getLocalBounds();
+    fText.setOrigin(bound.left+0.5*bound.width,bound.top+0.5*bound.height);
+    fText.setPosition(0.1*fX + 0.1*fX*i,fY*0.5);
+    fCompleteDummy.push_back( fText );
+  }  
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Difficulty of WordSearch - vary #s of short,med,long words 
+//
+void WordSearch::set_difficulty_numbers(std::string diff){
+  if( diff == "Easy" ){
+    fNShort = 2; fNMedium = 4; fNLong = 4;
+  } else if( diff == "Medium" ){
+    fNShort = 4; fNMedium = 6; fNLong = 5;
+  } else if( diff == "Hard" ){
+    fNShort = 6; fNMedium = 6; fNLong = 6;
+  } else {
+    fNShort = 4; fNMedium = 6; fNLong = 5; // default to medium
+  }
+  fNShort = 6;
+  fNMedium = 5;
+  fNLong = 4;
+  fNWordsGen[ fWordLength["short"] ]  = fNShort;
+  fNWordsGen[ fWordLength["medium"] ] = fNMedium;
+  fNWordsGen[ fWordLength["long"] ]   = fNLong;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Reset the board:
+//
+void WordSearch::reset_everything(){
+  fRandomWords.clear();
+  make_word_list();
+  fCheatStatus = false;
+  fUserAttempt = false;
+  user_interaction(sf::Color::White);
+  protected_interaction(sf::Color::White);
+  fUserFilledBlocks.clear();
+  fUserAttemptToFindWord.clear();
+  fScratchedOut.clear();
+  fLHSInformation.clear();
+  fLetters.clear();
+  fListOfIDs.clear();
+  fWords.clear();
+  fWordIDs.clear();
+  fWordCount = 0;
+
+  fSuccessCount = -1;
+  fCutOffTime = sf::seconds(0.0);
+  fComplete.clear();
+  
+  fFinalClick = 0;
+  fInitialClick = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Draw Function
+//
+void WordSearch::draw( sf::RenderTarget& target, sf::RenderStates) const {
+  for( unsigned int i=0; i<fBoard.size(); i++ ) {target.draw( fBoard[i] );}
+  std::map<int,sf::RectangleShape>::const_iterator mit;
+  for(mit=fSquares.begin(); mit!=fSquares.end(); mit++){target.draw( mit->second );}
+  std::map<int,sf::Text>::const_iterator mitext;
+  for(mitext=fLetters.begin(); mitext!=fLetters.end(); mitext++){target.draw(mitext->second);}
+  for(unsigned int i=0; i<fLHSInformation.size(); i++){target.draw(fLHSInformation[i]);}
+  target.draw( fCheat->fBox );
+  for( unsigned int i=0; i<fScratchedOut.size(); i++ ) {target.draw( fScratchedOut[i] );}
+  for( unsigned int i=0; i<fComplete.size(); i++ ) {target.draw( fComplete[i] );}
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Randomly Assign Letters to the Board
+//
+void WordSearch::randomly_fill_board(){  
+  for(fMii=fIDrow.begin(); fMii!=fIDrow.end(); fMii++){
+    int id = fMii->first;
+
+    // If the ID is already in fListOfIDs, then skip b/c this is a word
+    bool ignore = fListOfIDs.find(id) != fListOfIDs.end();
+    if( ignore ) continue;
+    
+    int rndm_element = rand() % fAlphabet.size();
+    sf::Vector2f pos = (fSquares[id]).getPosition();
+    std::string rndm_str(1,fAlphabet[rndm_element]);
+    fText.setString(rndm_str);
+    fText.setCharacterSize( 0.7*fDx );
+    fText.setColor( sf::Color::Black );
+    fText.setStyle(sf::Text::Bold);
+    sf::FloatRect bound = fText.getLocalBounds();
+    fText.setOrigin(bound.left+0.5*bound.width,bound.top+0.5*bound.height);
+    fText.setPosition(pos);
+    fLetters[id] = fText;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Find list of all possible directions, naively ignoring multiple words
+//
+std::set<int> WordSearch::which_dir_naive(std::string str, int ID){
+  int len = str.length();
+  std::set<int> possibilities;
+  int row = fIDrow[ID]; // row and col start at 0
+  int col = fIDcol[ID];
+
+  if( row - len >= fMinRow ) possibilities.insert(fDirMap["up"]); 
+  if( row + len <= fMaxRow ) possibilities.insert(fDirMap["down"]);
+  if( col - len >= fMinCol ) possibilities.insert(fDirMap["left"]);
+  if( col + len <= fMaxCol ) possibilities.insert(fDirMap["right"]);
+  // Now the diagonals:
+  if( (row - len >= fMinRow) && (col - len >= fMinCol) ) possibilities.insert(fDirMap["upleft"]);
+  if( (row - len >= fMinRow) && (col + len <= fMaxCol) ) possibilities.insert(fDirMap["upright"]);
+  if( (row + len <= fMaxRow) && (col + len <= fMaxCol) ) possibilities.insert(fDirMap["downright"]);
+  if( (row + len <= fMaxRow) && (col - len >= fMinCol) ) possibilities.insert(fDirMap["downleft"]);
+  return possibilities;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Insert accepted word into fLetters
+//
+bool WordSearch::insert_letters(std::string word, int dir, int id){
+  // Make it upper case
+  to_upper(word);
+  std::vector<sf::Text> letters = string_to_text(word);
+  std::map<int,sf::Text> texts; // will be used to check for overlaps
+  std::set<int> list_of_ids;    // temp set for overlap checks
+  // Index is important, [0]==starting ID position
+  for(unsigned int i=0; i<letters.size(); i++){
+    sf::Text text = letters[i];
+    int row = fIDrow[id];
+    int col = fIDcol[id];
+    sf::FloatRect bound = text.getLocalBounds();
+    text.setOrigin(bound.left+0.5*bound.width,bound.top+0.5*bound.height);
+    text.setPosition( (fSquares[id]).getPosition() );
+    list_of_ids.insert(id);
+    texts[id] = text;
+
+    // Need to update id depending on where we are going
+    int nextrow = row;
+    int nextcol = col;
+    // Easy directions first:
+    if(fDirMapInv[dir] == "up" )   nextrow--;
+    if(fDirMapInv[dir] == "left")  nextcol--;
+    if(fDirMapInv[dir] == "down")  nextrow++;
+    if(fDirMapInv[dir] == "right") nextcol++;
+    // Diagonals
+    if(fDirMapInv[dir] == "upleft" ) {
+      nextrow--;
+      nextcol--;
+    }
+    if(fDirMapInv[dir] == "upright" ){
+      nextrow--;
+      nextcol++;
+    }
+    if(fDirMapInv[dir] == "downright" ){
+      nextrow++;
+      nextcol++;
+    }
+    if(fDirMapInv[dir] == "downleft" ){
+      nextrow++;
+      nextcol--;
+    }
+    
+    id = fRowColID[nextrow][nextcol];
+  }
+
+  // Handle which words actually get drawn. Let's ignore overlaps for now
+  std::set<int> overlaps = check_for_overlaps(list_of_ids); 
+  bool already_exists = false;
+  bool do_overlaps_coincide = true;
+
+  // Keep it if the overlaps are equal, otherwise ditch the word altogether
+  for(fSi=overlaps.begin(); fSi!=overlaps.end(); fSi++) {
+    int overlapID = *fSi;
+    std::string teststr  = texts[overlapID].getString();
+    std::string boardstr = fLetters[overlapID].getString();
+    std::cout << overlapID << " " << teststr << " " << boardstr
+	      << " " << overlaps.size() << std::endl;
+    if( teststr != boardstr ) do_overlaps_coincide = false;
+  }
+
+  // Does this std::string already exist? Need to check:
+  already_exists = std::find(fWords.begin(), fWords.end(), word) != fWords.end();
+
+  // if already_exists==true, that means the word has surprisingly already been
+  // chosen - a complete random coincidence. Ignore this possibility.
+  if( !already_exists && do_overlaps_coincide ){
+    fWords.push_back(word);
+      
+    printf("%d \t %d \t %d \t %d \t %d \t %s \n",
+    	   id, fIDrow[id], fIDcol[id], word.length(), already_exists, word.c_str() );
+    fWordCount++;
+    
+    for(fSi=list_of_ids.begin(); fSi!=list_of_ids.end(); fSi++) {
+      fWordIDs[fWordCount].insert( *fSi );
+      fListOfIDs.insert( *fSi );
+      sf::Text textemp = texts[*fSi];
+      textemp.setColor(sf::Color::Black);
+      textemp.setCharacterSize( 0.7*fDx );
+      fLetters[*fSi] = textemp;
+    }
+    return true;
+  } else {
+    return false;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Check the # of overlaps b/t temp ID set and fListOfIDs
+//
+std::set<int> WordSearch::check_for_overlaps(std::set<int>& tempIDs){
+  std::set<int> overlaps;
+  
+  if( fListOfIDs.empty() ) return overlaps;
+  
+  for(fSi=tempIDs.begin(); fSi!=tempIDs.end(); fSi++){
+    int id = *fSi;
+    bool found = fListOfIDs.find(id) != fListOfIDs.end();
+    if( found ) overlaps.insert( id );
+  }
+  return overlaps;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Convert string to sf::Text (1 letter each)
+//
+std::vector<sf::Text> WordSearch::string_to_text(std::string word){
+  std::vector<sf::Text> text;
+  for(fStr=word.begin(); fStr!=word.end(); fStr++){
+    std::string letter(1,*fStr);
+    fText.setString(letter);
+    fText.setCharacterSize( 0.7*fDx );
+    fText.setStyle(sf::Text::Bold);
+    fText.setColor( sf::Color::Black );
+    text.push_back(fText);
+  }
+  return text;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Place Words from Dictionary on the Board
+//
+void WordSearch::handle_word_placement(){
+
+  // This is unconventional, but I'd like to place the long words first
+  // since geometrically these should be more difficult to place.
+  for(int i = 2; i>=0; i--){
+    std::vector<std::string> possible_words = fRandomWords[i];
+    int nmax = fNWordsGen[i];
+    int ngen = 0;
+    int N = 0;
+    while( ngen < nmax ){
+      // Note that I am incrementing N as I am indexing
+      std::string tempstr = possible_words[N++];
+      
+      // ID0 = ID + 0 for "knot" => starting ID position
+      int ID0 = rand() % (fSquares.size()-1);
+
+      // Find all possible directions based on row/col
+      std::set<int> dirs = which_dir_naive( tempstr, ID0 );
+      std::set<int>::iterator si(dirs.begin());
+      //for(si; si!=dirs.end(); si++) std::cout << *si << std::endl;
+
+      // Randomly choose a direction based on the results of which_dir_naive:
+      std::advance(si,rand()%(dirs.size()));
+      bool inserted = insert_letters(tempstr,*si,ID0); // if false, ignore
+      if( inserted ) ngen++;
+    }
+  }
+  // Fill the remainder of the board with random letters:
+  randomly_fill_board();
+  make_word_info();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Generate the board:
+//
+void WordSearch::make_board(){
+  float xi = 0.05*fX + fOffsetX;
+  float yi = 0.05*fY;
+  float xf = 0.95*fX;
+  
+  float dx = (xf-xi) / fCol;
+  float yf = fRow*dx;
+
+  fMaxLHSX = xi;
+
+  while( yf > 0.95*fY ){  
+    fRow--;
+    yf = fRow*dx;
+  }
+
+  // dy and dx will be close, but not exact since xi != yi
+  float dyf = fY-yf;
+  if( yi-dyf != 0.0 ){
+    yi += 0.5*(dyf-yi);
+  }
+  
+  float dy = (yf-yi)/fRow;
+  
+  for(int col=0; col<=fCol; col++){
+    fLine[0].position = sf::Vector2f(xi + col*dx, yi);
+    fLine[1].position = sf::Vector2f(xi + col*dx, yf);
+    fLine[0].color = fBoardColor;
+    fLine[1].color = fBoardColor;
+    fBoard.push_back( fLine );
+  }
+  for(int row=0; row<=fRow; row++){  
+    fLine[0].position = sf::Vector2f(xi, yi+row*dy);
+    fLine[1].position = sf::Vector2f(xf, yi+row*dy);
+    fLine[0].color = fBoardColor;
+    fLine[1].color = fBoardColor;
+    fBoard.push_back( fLine );   
+  }
+
+  // Let's get the squares now:
+  // This is required if I want the allusion of "highlighted" squares. Also,
+  // it is a good method to keep track of the position which will be used
+  // for sf::Text placement. Also, can generate useful ID->row,col maps
+  int nrect = 0;
+  double lthick = 2.0;
+  for(int row=0; row<fRow; row++){
+    for(int col=0; col<fCol; col++){
+      float width  = dx - 2.0*lthick;
+      float height = dy - 2.0*lthick;
+      float xtemp = xi+col*dx + 0.5*width + lthick;
+      float ytemp = yi+row*dy + 0.5*height + lthick;
+      sf::RectangleShape rect(sf::Vector2f(width,height));
+      rect.setOrigin(0.5*width,0.5*height);
+      rect.setFillColor(sf::Color::White);
+      rect.setPosition(xtemp,ytemp);
+      fSquares[nrect] = rect;
+      fIDrow[nrect] = row;
+      fIDcol[nrect] = col;
+      fRowColID[row][col] = nrect;
+      nrect++;
+    }
+  }
+  fDx = dx;
+  fMinRow = 0;
+  fMinCol = 0;
+  fMaxRow = fIDrow[fIDrow.size()-1];
+  fMaxCol = fIDcol[fIDcol.size()-1];
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Convert a string to all caps
+//
+void WordSearch::to_upper(std::string& low){
+  for(unsigned i=0; i<low.length(); i++) low[i] = std::toupper(low[i]);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Generate list of words to find for the user:
+//
+void WordSearch::make_word_info(){
+  float y0 = 0.25*fY;
+  float x0 = 0.5*fMaxLHSX;
+  fText.setCharacterSize( 45 );
+  fText.setString("Words to Find:");
+  sf::FloatRect bound = fText.getLocalBounds();
+  fText.setOrigin(bound.left+0.5*bound.width,bound.top+0.5*bound.height);
+  fText.setPosition(sf::Vector2f(x0,y0));
+  fLHSInformation.push_back( fText );
+
+  // Okay, so I need a way to access LHS words. BUT...I am sorting
+  // the vector based on string length, so there will be information lost
+  // from initial word generation due to sorting. Let's keep track of it
+  // using the fWordScratchMap container which maps initial index to sorted index!
+  std::vector<std::string> vtemp = fWords;
+ 
+  compare c;
+  std::sort(fWords.begin(), fWords.end(), c);
+
+  for(unsigned int i=0; i<vtemp.size(); i++){
+    for(unsigned int j=0; j<fWords.size(); j++){
+      if(  vtemp[i] == fWords[j] ) fWordScratchMap[i] = j;
+    }
+  }
+  
+  float dy=1.3;
+  float cheat_pos = 0.0;
+  for(fVstr=fWords.begin(); fVstr!=fWords.end(); fVstr++){
+    fText.setCharacterSize(30);
+    fText.setString(*fVstr);
+    bound = fText.getLocalBounds();
+    fText.setOrigin(bound.left+0.5*bound.width,bound.top+0.5*bound.height);
+    fText.setPosition(sf::Vector2f(x0,y0+dy*30));
+    fLHSInformation.push_back( fText );
+    cheat_pos = y0+dy*30.0;
+    dy++;
+  }
+
+  // Make the cheat button:
+  cheat_pos *= 1.2;
+  fText.setCharacterSize( 30 );
+  fText.setString("Cheat:  ");
+  bound = fText.getLocalBounds();
+  fText.setOrigin(bound.left+0.5*bound.width,bound.top+0.5*bound.height);
+  
+  fCheat = new CheckBox(x0,cheat_pos,0.5);
+  sf::Vector2f cheatsize = fCheat->getSize();
+  float wid = bound.width + cheatsize.x;
+  fText.setPosition(x0-0.5*wid,cheat_pos);
+  fCheat->setPosition(sf::Vector2f(x0+0.5*wid-cheatsize.x*0.5,cheat_pos));
+  fLHSInformation.push_back( fText );
+  fCheat->update();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Make the Word list - ranges in easy to hard words (size). Now based on the
+// users input, I can control how many short/med/long words are used.
+//
+void WordSearch::make_word_list(){
+  for( int i=0; i<100; i++ ){
+    fRandomWords[fWordLength["long"]].push_back( fDict->GetLongWord( rand() % fDict->fLongSize ) );
+  }
+  for( int i=0; i<100; i++ ){
+    fRandomWords[fWordLength["medium"]].push_back( fDict->GetMedWord( rand() % fDict->fMedSize ) );
+  }
+  for( int i=0; i<100; i++ ){
+    fRandomWords[fWordLength["short"]].push_back( fDict->GetShortWord( rand() % fDict->fShortSize ) );
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// User functions:
+//
+
+////////////////////////////////////////////////////////////////////////////////
+// Handle Mouse Movements:
+//
+void WordSearch::update_mouse_pressed(sf::Vector2f mpos){
+  // LHS Check Box
+  if( fabs(mpos.x - (fCheat->fBox).getPosition().x) < 0.5*(fCheat->getSize()).x &&
+      fabs(mpos.y - (fCheat->fBox).getPosition().y) < 0.5*(fCheat->getSize()).y ){
+    if( fCheatStatus ) {
+      fCheatStatus = false;
+      cheat_function(sf::Color::Black);
+    } else {
+      fCheatStatus = true;
+      cheat_function(sf::Color::Red);
+    }
+    fCheat->setStatus( fCheatStatus );
+  }
+  // Check to see which sf::Rectangles are highlighted
+  if( fUserAttempt ){
+    for( fMir=fSquares.begin(); fMir!=fSquares.end(); fMir++ ){
+      sf::Vector2f pos = (fMir->second).getPosition();
+      if( fabs(mpos.x - pos.x) < 0.5*fDx && fabs(mpos.y - pos.y) < 0.5*fDx ){
+	fUserAttemptToFindWord.insert( fMir->first );
+	fInitialClick = fMir->first;
+	break;
+      }
+    }
+    user_interaction(fUserColor);
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+//
+void WordSearch::update_mouse_move(sf::Vector2f mpos){
+  // Let's make sure that the cursor is away from the initial click, otherwise
+  // wtf is the point of this method
+  
+  sf::Vector2f init = fSquares[fInitialClick].getPosition();
+  if( fabs(mpos.x - init.x) < 0.5*fDx && fabs(mpos.y - init.y) < 0.5*fDx ){
+    user_interaction(sf::Color::White);
+    fUserAttemptToFindWord.clear();
+    fUserAttemptToFindWord.insert(fInitialClick);
+    user_interaction(fUserColor);
+    return;
+  }
+
+  // search for a new square
+  int endclick = -1;
+  for( fMir=fSquares.begin(); fMir!=fSquares.end(); fMir++ ){
+    sf::Vector2f pos = (fMir->second).getPosition();
+    if( fabs(mpos.x - pos.x) < 0.5*fDx && fabs(mpos.y - pos.y) < 0.5*fDx ){
+      endclick = fMir->first;
+      break;
+    }
+  }
+
+  // Ignore if we do not find a block
+  if( endclick < 0 ) return;
+
+  // Ignore if the found block is the same as fFinalBlock
+  if( endclick == fFinalClick ) return;
+  fFinalClick = endclick; // update it if we make it
+  
+  // Now we need to add rows/cols to our fUserAttemptToFindWord:
+  sf::Vector2f D = fSquares[endclick].getPosition() - init;
+  float mag = sqrt( D.x*D.x + D.y*D.y );
+  sf::Vector2f D_hat(D.x/mag,D.y/mag);
+  float theta = acos( D_hat.x ) * 180.0 / 3.1415;
+
+  int dir = -1;
+  if( D_hat.x > 0.0 && theta < 20.0  )                    dir = fDirMap["right"];
+  if( D_hat.x < 0.0 && theta > 160.0 )                    dir = fDirMap["left"];
+  if( D_hat.y < 0.0 && theta > 70.0 && theta < 110.0 )    dir = fDirMap["up"];
+  if( D_hat.y > 0.0 && theta > 70.0 && theta < 110.0 )    dir = fDirMap["down"];
+  if( D_hat.y < 0.0 && theta >= 20.0 && theta <= 60.0 )   dir = fDirMap["upright"];
+  if( D_hat.y < 0.0 && theta >= 110.0 && theta <= 160.0 ) dir = fDirMap["upleft"];
+  if( D_hat.y > 0.0 && theta >= 20.0 && theta <= 60.0 )   dir = fDirMap["downright"];
+  if( D_hat.y > 0.0 && theta >= 110.0 && theta <= 160.0 ) dir = fDirMap["downleft"];
+
+  user_interaction(sf::Color::White);
+  fUserAttemptToFindWord.clear();
+  fUserAttemptToFindWord.insert(fInitialClick);
+  if( fCheatStatus ) cheat_function(sf::Color::Red);
+  
+  std::set<int> blocks_to_color = get_user_blocks(fInitialClick,fFinalClick,dir);
+  for(fSi=blocks_to_color.begin(); fSi!=blocks_to_color.end(); fSi++){
+    fUserAttemptToFindWord.insert(*fSi);
+  }
+  user_interaction(fUserColor);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Need to do 2 critical things - 1) Check to see if the highlighted word
+// matches a registered word to find. 2) Either
+void WordSearch::update_mouse_released(){
+  if( fUserAttemptToFindWord.empty() ) return;
+  
+  // 1) Is this a word?
+  int which_word = -1;
+  bool success = false;
+  for(fMisi=fWordIDs.begin(); fMisi!=fWordIDs.end(); fMisi++){
+    if( fMisi->second == fUserAttemptToFindWord ){
+      success = true;
+      which_word = fMisi->first;
+    }
+  }
+
+  // If it is a word, protect it it fUserFilledBlocks
+  if( success && which_word > 0 ){
+    for(fSi=fWordIDs[which_word].begin(); fSi!=fWordIDs[which_word].end(); fSi++){
+      fUserFilledBlocks.insert( *fSi );
+    }
+    // scratch out the word on the LHS. Ok the index scheme is confusing. 1) which_word
+    // grabs the key from fWordsID which starts at 1 and runs to # of words. My vector starts
+    // at 0, so I need -1. I am grabbing the sf::Text box from fLHSInfo, which has "Words
+    // to find" as the 0th element, so I need to move up by 1 index by default.
+    sf::Vector2f pos =  fLHSInformation[fWordScratchMap[which_word-1]+1].getPosition();
+    sf::FloatRect box = fLHSInformation[fWordScratchMap[which_word-1]+1].getLocalBounds();
+    fLine[0].position = sf::Vector2f(pos.x-box.width*0.65, pos.y);
+    fLine[1].position = sf::Vector2f(pos.x+box.width*0.65, pos.y);
+    fLine[0].color = sf::Color::Black;
+    fLine[1].color = sf::Color::Black;
+    fScratchedOut.push_back( fLine );   // Scratch out the word on LHS
+    protected_interaction(fFoundColor); // Permanently change block colors
+    fSounds->play_success();
+  } else {
+    user_interaction(sf::Color::White); // reset
+    fSounds->play_failure();            // you suck!
+  }
+
+  // If we are in cheat-mode and the user scans over a word, the word needs to
+  // retain the red text, otherwise it get lost
+  if( fCheatStatus ){
+    for( fSi=fUserAttemptToFindWord.begin(); fSi!=fUserAttemptToFindWord.end(); fSi++){
+      if( fListOfIDs.find(*fSi) != fListOfIDs.end() ) fLetters[*fSi].setColor(sf::Color::Red);
+    }
+  }
+  fUserAttemptToFindWord.clear(); // This needs to get cleared for sure
+
+  if( fScratchedOut.size() == fWordCount ) fSuccess = true;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Userful functions to keep track of coloring user squares. For example, I
+// want the user to be able to click a square and drag, this should initiate
+// multiple block being lit up in a straight line in order to reveal a word
+void WordSearch::user_interaction(sf::Color col){
+  for( fSi=fUserAttemptToFindWord.begin(); fSi!=fUserAttemptToFindWord.end(); fSi++){
+    bool protect_this_block = fUserFilledBlocks.find( *fSi ) != fUserFilledBlocks.end();
+    if( !protect_this_block ) {
+      fSquares[*fSi].setFillColor(col);
+      if( col == fUserColor ) fLetters[*fSi].setColor(sf::Color::White);
+      else fLetters[*fSi].setColor(sf::Color::Black);
+    }
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Words that the user found and should be protected for the duration of game
+//
+void WordSearch::protected_interaction(sf::Color col){
+  for( fSi=fUserFilledBlocks.begin(); fSi!=fUserFilledBlocks.end(); fSi++){
+    fSquares[*fSi].setFillColor(col);
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Lets change the words to either black/red depending on the state of
+// fCheat => an easy visualization for cheating!
+//
+void WordSearch::cheat_function(sf::Color col){
+  for(fSi=fListOfIDs.begin(); fSi!=fListOfIDs.end(); fSi++){
+    bool word = fLetters.find( *fSi ) != fLetters.end();
+    if( word ) fLetters[*fSi].setColor(col);
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Depending on where the cursor is, generate a list of blocks connecting
+// the initial click to the current position of the cursor.
+//
+std::set<int> WordSearch::get_user_blocks(int init, int final, int dir){
+  int srow = fIDrow[init];
+  int scol = fIDcol[init];
+  int erow = fIDrow[final];
+  int ecol = fIDcol[final];
+  std::set<int> blocks;
+  if( fDirMapInv[dir] == "right" ){
+    for(int i=scol; i<=ecol; i++) blocks.insert(fRowColID[srow][i]);
+  }
+  if( fDirMapInv[dir] == "left" ){
+    for(int i=scol; i>=ecol; i--) blocks.insert(fRowColID[srow][i]);
+  }
+  if( fDirMapInv[dir] == "up" ){
+    for(int i=srow; i>=erow; i--) blocks.insert(fRowColID[i][scol]);
+  }
+  if( fDirMapInv[dir] == "down" ){
+    for(int i=srow; i<=erow; i++) blocks.insert(fRowColID[i][scol]);
+  }
+  if( fDirMapInv[dir] == "downright" ){
+    while( scol <= ecol && srow <= erow ){
+      blocks.insert(fRowColID[srow][scol]);
+      srow++; scol++;
+    }
+  }
+  if( fDirMapInv[dir] == "downleft" ){
+    while( scol >= ecol && srow <= erow ){
+      blocks.insert(fRowColID[srow][scol]);
+      srow++; scol--;
+    }
+  }
+  if( fDirMapInv[dir] == "upright" ){
+    while( scol <= ecol && srow >= erow ){
+      blocks.insert(fRowColID[srow][scol]);
+      srow--; scol++;
+    }
+  }
+  if( fDirMapInv[dir] == "upleft" ){
+    while( scol >= ecol && srow >= erow ){
+      blocks.insert(fRowColID[srow][scol]);
+      srow--; scol--;
+    }
+  }
+  return blocks;
+}
+
+void WordSearch::handle_completion(sf::Time elapsed){
+  fCutOffTime += elapsed;
+
+  if( (fCutOffTime.asSeconds() >= 10000.) ){
+    if( fCompleteDummy.size()-1 > abs(fSuccessCount) ) {
+      std::cout << fSuccessCount << " " << fCompleteDummy.size() << std::endl;
+      fSuccessCount++;
+      fComplete.push_back( fCompleteDummy[fSuccessCount] );
+      fCutOffTime = sf::seconds(0.0);
+      fSounds->play_win();
+    }
+  }
+  
+  if( fCutOffTime.asSeconds() >= 40000.0 && fSuccessCount+1 == fCompleteDummy.size() ){
+    for(unsigned int i=0; i<fComplete.size(); i++){
+      unsigned int size = fComplete[i].getCharacterSize();
+      if(size > 200 ) break;
+      fComplete[i].setCharacterSize(size+.1);
+    }
+    reset_everything();
+    handle_word_placement();
+    fSuccess = false;
+  }
+}
