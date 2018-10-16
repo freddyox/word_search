@@ -1,2 +1,2 @@
 # word_search
-A word search game
+A word search generator/game
